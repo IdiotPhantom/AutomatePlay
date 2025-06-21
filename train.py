@@ -1,13 +1,15 @@
 import torch.nn as nn
 import torch.optim as optim
 from GameActionModel import GameActionModel
-from setting import Task, NN_FILE_NAME, TRAINING_DATA_NAME
+from setting import Task, NN_FILE_NAME, SCRIPT_DIR, TRAINING_DATA_PATH
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from PIL import Image
 import torchvision.transforms as transforms
 import torch
 import csv
+from tqdm import tqdm
+import os
 
 
 class GameActionDataset(Dataset):
@@ -42,7 +44,13 @@ class GameActionDataset(Dataset):
         return image, task_id, label
 
 
-dataset = GameActionDataset(TRAINING_DATA_NAME)
+# Format it as a date string (e.g., YYYY-MM-DD)
+augmented_data_path = os.path.join(SCRIPT_DIR, "augmented_data")
+augmented_data = os.path.join(augmented_data_path, f"data.csv")
+
+training_data = os.path.join(TRAINING_DATA_PATH,"data2025-06-21.csv")
+
+dataset = GameActionDataset(training_data)
 dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
 
@@ -53,14 +61,22 @@ criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
 for epoch in range(10):  # number of epochs
-    for images, task_ids, labels in dataloader:
-        output = model(images, task_ids)  # [B, 3]
+    running_loss = 0.0
+    progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}", unit="batch")
+
+    for images, task_ids, labels in progress_bar:
+        output = model(images, task_ids)
         loss = criterion(output, labels)
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-    print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
+        running_loss += loss.item()
+        progress_bar.set_postfix(loss=loss.item())
+
+    print(
+        f"Epoch {epoch+1} completed. Avg Loss: {running_loss / len(dataloader):.4f}")
+
 
 torch.save(model.state_dict(), NN_FILE_NAME)

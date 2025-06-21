@@ -1,4 +1,5 @@
 import os
+import time
 from enum import Enum
 
 # --- Base Paths ---
@@ -7,7 +8,6 @@ BLUESTACK_PATH = r"C:\Program Files\BlueStacks_nxt"
 ADB_PATH = os.path.join(SCRIPT_DIR, "ADB", "adb.exe")
 PLAYER_EXE = os.path.join(BLUESTACK_PATH, "HD-Player.exe")
 IMAGE_FOLDER_PATH = os.path.join(SCRIPT_DIR, "images")
-TRAINING_IMAGE_PATH = os.path.join(SCRIPT_DIR, "training")
 NN_FILE_NAME = "model.pth"
 SCREEN_IMAGE = os.path.join(SCRIPT_DIR, "screen.png")
 
@@ -31,7 +31,7 @@ LOGIN_DETAILS = [
 ]
 
 # --- Timing Settings ---
-INSTANCE_STARTING_TIME = 5
+INSTANCE_STARTING_TIME = 10
 GAME_START_TIMEOUT = 60
 IMAGE_FAILED_TIMEOUT = 5
 INTERVAL = 10
@@ -56,6 +56,7 @@ def join_image_path(filename):
     return os.path.join(IMAGE_FOLDER_PATH, filename)
 
 
+SCREEN_IMAGE = os.path.join(SCRIPT_DIR, "screen.png")
 # --- Image Assets ---
 GAME_ICON_IMAGE = join_image_path("gameicon.png")
 LOGIN_IMAGE = join_image_path("login.png")
@@ -120,8 +121,20 @@ class Train:
     TRAINING = False
 
 
+# Get current local time as a struct_time
+current_time = time.localtime()
+
+# Format it as a date string (e.g., YYYY-MM-DD)
+date_string = time.strftime("%Y-%m-%d", current_time)
 TRAINING_DATA_PATH = os.path.join(SCRIPT_DIR, "data")
-TRAINING_DATA_NAME = os.path.join(TRAINING_DATA_PATH, "training.csv")
+TRAINING_DATA_NAME = os.path.join(TRAINING_DATA_PATH, f"data{date_string}.csv")
+
+TRAINING_IMAGE_PATH = os.path.join(SCRIPT_DIR, "training_images")
+
+AUGMENTED_DATA_PATH = os.path.join(SCRIPT_DIR, "augmented_data")
+AUGMENTED_DATA_NAME = os.path.join(AUGMENTED_DATA_PATH, f"augmented_data.csv")
+
+AUGMENTED_IMAGE_PATH = os.path.join(SCRIPT_DIR, "augmented_images")
 
 
 # --- Task Enum ---
@@ -139,5 +152,5 @@ class Task(Enum):
     QUIT_TEAM = 10
     CLAIM_MONEY = 11
     CLAIM_RESOURCES = 12
-    #DELETE_MAIL = 13
+    DELETE_MAIL = 13
     # Add more tasks as needed

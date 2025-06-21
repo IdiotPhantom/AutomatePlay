@@ -26,13 +26,11 @@ class AIJianXia:
             if action["type"] == "done":
                 print(f"[{task.name}] task is completed.")
                 break
-            elif action["type"] == "skip":
-                print(f"[{task.name}] skipped due to reason: {action.get('reason', 'unknown')}")
-                continue
             elif action["type"] == "tap":
-                confidence = action.get("confidence", 1.0)
+                confidence = action["confidence"]
                 if confidence < CONFIDENCE_THRESHOLD:
-                    print(f"[{task.name}] low confidence ({confidence:.2f}), skipping tap")
+                    print(
+                        f"[{task.name}] low confidence ({confidence:.2f}), skipping tap")
                     continue
 
                 x, y = action["x"], action["y"]
@@ -42,6 +40,9 @@ class AIJianXia:
                     f"[{task.name}] tapping at ({x}, {y}), ({x_norm:.2f},{y_norm:.2f}) with confidence {confidence:.2f}"
                 )
                 self.instance.instance_adb.adb_tap(x, y)
+            else:
+                print(
+                    f"[{task.name}] skipped due to reason: {action.get('reason', 'unknown')}")
 
 
     def decide_action(self, screenshot_path, task: Task):
@@ -65,9 +66,6 @@ class AIJianXia:
         # Get values
         x_norm, y_norm, done_score, confidence = output[0]
 
-        if confidence.item() < 0.7:
-            return {"type": "skip", "reason": "low confidence"}
-
         x = int(x_norm.item() * SCREEN_WIDTH)
         y = int(y_norm.item() * SCREEN_HEIGHT)
 
@@ -75,12 +73,12 @@ class AIJianXia:
         if done_score.item() > 0.5:
             return {"type": "done"}
         else:
-            return {"type": "tap", "x": x, "y": y, "x_norm": x_norm, "y_norm": y_norm}
+            return {"type": "tap", "x": x, "y": y, "x_norm": x_norm, "y_norm": y_norm, "confidence": confidence}
 
     def print(self, message):
         print(f"\t[@]{message}")
 
 
-task = Task.LOGIN
+task = Task.JOIN_TEAM
 model = AIJianXia()
 model.start_loop(task)
