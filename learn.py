@@ -1,30 +1,23 @@
 import os
-import time
 import csv
-import math
 import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
+from PIL import Image
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 from PIL import Image
 
 from GameActionModel import GameActionModel
 from resize_image import ResizeImage
-from setting import Task, SCREEN_HEIGHT, SCREEN_WIDTH,  TRAINING_DATA_NAME
+from setting import Task, SCREEN_HEIGHT, SCREEN_WIDTH, LEARNING_IMAGE_PATH, SCREEN_IMAGE, SCRIPT_DIR, TRAINING_DATA_PATH
 
 from rich.live import Live
 from rich.table import Table
 from rich.panel import Panel
-from rich.text import Text
 from rich.console import Console
-
-
-# ==== Constants ====
-LOW_CONFIDENCE_THRESHOLD = 0.2
-MEDIUM_CONFIDENCE_THRESHOLD = 0.6
-DONE_SCORE_THRESHOLD = 10
-CIRCLE_RADIUS = 15
 
 
 class Learn:
@@ -32,228 +25,196 @@ class Learn:
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu")
         self.model = GameActionModel(num_tasks=len(Task)).to(self.device)
+        self.model.eval()
         self.criterion = nn.MSELoss()
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4)
         self.feedback_counter = 0
-        self.loss_history = []
 
-    def start_learn(self, end_count=10, data=[]):
-        trigger = 0
-        success_count = 0
-        count = 0
-        accumulated_confidence = 0
+        for param in self.model.cnn.parameters():
+            param.requires_grad = True
 
-        with Live(console=Console(), refresh_per_second=4) as live:
-            while trigger < 0.7:
-                time.sleep(0.1)
-                count += 1
-                accumulated_confidence += trigger
-
-                rand = random.randint(0, len(data) - 1)
-                train_data = data[rand]
-
-                image_path, task_id, x_data, y_data, done_data, confidence_data = train_data
-
-                if not os.path.exists(image_path):
-                    self.print(f"[WARN] Image not found: {image_path}")
-                    continue
-
-                action, loaded_image = self.decide_action(image_path, task_id)
-                if action["type"] == "done":
-                    self.print(f"[{Task(task_id).name}] Task is completed.")
-                    break
-
-                elif action["type"] == "tap":
-                    confidence = action["confidence"]
-                    trigger = confidence
-
-                    if trigger < LOW_CONFIDENCE_THRESHOLD:
-                        x, y = random_point_in_circle(x_data, y_data)
-                        x_norm = x / SCREEN_WIDTH
-                        y_norm = y / SCREEN_HEIGHT
-                        self.print(
-                            "🔄 Super low confidence — using random tap within range.")
-                    elif trigger < MEDIUM_CONFIDENCE_THRESHOLD:
-                        x = random.randint(0, SCREEN_WIDTH - 1)
-                        y = random.randint(0, SCREEN_HEIGHT - 1)
-                        x_norm = x / SCREEN_WIDTH
-                        y_norm = y / SCREEN_HEIGHT
-                        self.print("🔄 Low confidence — using random tap.")
-                    else:
-                        x, y = action["x"], action["y"]
-                        x_norm, y_norm = action["x_norm"], action["y_norm"]
-                        self.print(f"✨ Confidence — tap on ({x}, {y})")
-
-                    # Check if tap is correct
-                    correct = is_point_in_circle(
-                        x, y, x_data, y_data, CIRCLE_RADIUS)
-                    if correct:
-                        success_count += 1
-                        confidence_flag = 1.0
-                        self.print("✅ Tap is within range.")
-                    else:
-                        success_count = 0
-                        confidence_flag = 0.2
-                        self.print("❌ Tap is out of range.")
-
-                    feedback = self.record_feedback(
-                        image_path, task_id, x_norm, y_norm, confidence_flag=confidence_flag
-                    )
-
-                    loss = self.learn_from_feedback(
-                        *feedback, loaded_image=loaded_image)
-
-                    live.update(self.generate_live_table(
-                        Task(
-                            task_id).name, confidence, x, y, image_path, count, accumulated_confidence, loss
-                    ))
-
-                    if success_count > end_count:
-                        break
-                else:
-                    self.print(
-                        f"[{Task(task_id).name}] Skipped: {action.get('reason', 'unknown')}")
-
-    def decide_action(self, image_path, task: int):
+    def decide_action(self, image_path, task: Task):
         image = Image.open(image_path).convert("RGB")
         tensor_image, scale, padding = ResizeImage.preprocess_image(image)
+
+        task_tensor = torch.tensor(
+            [task.value], dtype=torch.long).to(self.device)
         tensor_image = tensor_image.to(self.device)
 
-        task_tensor = torch.tensor([task], dtype=torch.long).to(self.device)
-
-        self.model.eval()
         with torch.no_grad():
             output = self.model(tensor_image, task_tensor)
 
         x_norm, y_norm, done_score, confidence = output[0]
         x, y = ResizeImage.unpad_and_rescale_coords(
-            x_norm.item(), y_norm.item(), scale, padding,
+            x_norm.item(), y_norm.item(),
+            scale, padding,
             orig_w=SCREEN_WIDTH, orig_h=SCREEN_HEIGHT
         )
 
-        if done_score.item() > DONE_SCORE_THRESHOLD:
-            return {"type": "done"}, image
+        if done_score.item() > 10:  # Threshold for task completion
+            return {"type": "done"}
 
         return {
             "type": "tap",
             "x": x,
             "y": y,
-            "x_norm": x_norm.item(),
-            "y_norm": y_norm.item(),
-            "confidence": confidence.item()
-        }, image
+            "x_norm": x_norm,
+            "y_norm": y_norm,
+            "confidence": confidence
+        }
 
-    def record_feedback(self, image_path, task: int, x_norm, y_norm, confidence_flag=1.0):
-        done = 0
-        return (image_path, task, x_norm, y_norm, done, confidence_flag)
+    def learn(self, datas):
+        success_count = 0
+        failed_count = 0
+        correct_count = 0
+        while (correct_count/100) < 0.8:
+            rand = random.randrange(0, len(datas)-1)
+            data = datas[rand]
+            image = data['image_path']
+            task = Task(int(data['task']))
+            correct_x_norm = data['x_norm']
+            correct_y_norm = data['y_norm']
+            correct_x = correct_x_norm * SCREEN_WIDTH
+            correct_y = correct_y_norm * SCREEN_HEIGHT
+            correct_done = data['done']
+            correct_confidence = data['confidence']
+            action = self.decide_action(image, task)
 
-    def learn_from_feedback(self, image_path, task: int, x, y, done, confidence_flag, loaded_image=None):
+            if action["type"] == "done":
+                if correct_done == 1:
+                    correct_count += 1
+                    success_count += 1
+                    failed_count = 0  # ✅ Reset failures if success
+                    self.print("✅ Correct done.")
+                else:
+                    success_count = 0
+                    failed_count += 1
+                    self.print("❌ Incorrect done.")
+
+            elif action["type"] == "tap":
+
+                x, y = action["x"], action["y"]
+
+                correct = is_within_radius(x, y, correct_x, correct_y)
+
+                if correct:
+                    correct_count += 1
+                    x_feedback = x  # model was right
+                    y_feedback = y
+                    success_count += 1
+                    failed_count = 0  # ✅ Reset failures if success
+                    self.print("✅ Tap is within target zone.")
+                else:
+                    success_count = 0
+                    x_feedback = (x + correct_x) / 2
+                    y_feedback = (y + correct_y) / 2
+                    success_count = max(success_count - 1, 0)
+                    self.print(
+                        "❌ Tap is out of range. Using center correction.")
+
+            else:
+                self.print(
+                    f"[{task.name}] Skipped: {action.get('reason', 'unknown')}")
+                continue
+
+            failed_count += 1
+            if failed_count >= 10:  # ✅ Perturb model after 10 failures
+                self.perturb_model_weights(strength=0.005)
+                failed_count = 0
+
+            x_norm = x_feedback / SCREEN_WIDTH
+            y_norm = y_feedback / SCREEN_HEIGHT
+            done_flag = correct_done
+            confidence_flag = correct_confidence
+            self.learn_from_feedback(
+                image, task, x_norm, y_norm, done_flag, confidence_flag)
+
+            self.print(f"Correctness: {(correct / 100):.2f}")
+
+    def learn_from_feedback(self, image_path, task: Task, x, y, done_flag, confidence_flag):
         self.model.train()
 
-        x = float(x)
-        y = float(y)
+        # Normalize target if needed
         if x > 1 or y > 1:
             x /= SCREEN_WIDTH
             y /= SCREEN_HEIGHT
 
-        image = loaded_image or Image.open(image_path).convert("RGB")
+        # Prepare input
+        image = Image.open(image_path).convert("RGB")
         image_tensor, _, _ = ResizeImage.preprocess_image(image)
         image_tensor = image_tensor.to(self.device)
+        task_tensor = torch.tensor(
+            [task.value], dtype=torch.long).to(self.device)
 
-        task_tensor = torch.tensor([task], dtype=torch.long).to(self.device)
-        label = torch.tensor([[x, y, float(done), float(
+        # Prepare target
+        target = torch.tensor([[x, y, float(done_flag), float(
             confidence_flag)]], dtype=torch.float).to(self.device)
 
+        # Forward pass
         output = self.model(image_tensor, task_tensor)
-        loss = self.criterion(output, label)
+
+        # Loss components
+        loss_x = F.mse_loss(output[0][0], target[0][0])
+        loss_y = F.mse_loss(output[0][1], target[0][1])
+        loss_done = F.binary_cross_entropy_with_logits(
+            output[0][2], target[0][2])
+        loss_conf = F.mse_loss(output[0][3], target[0][3])
+
+        # Total loss
+        loss = 1.0 * (loss_x + loss_y) + 0.1 * loss_done + 0.2 * loss_conf
 
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
+        self.model.eval()
         self.feedback_counter += 1
 
-        if self.feedback_counter % 10 == 0:
+        if self.feedback_counter % 50 == 0:
             self.print("💾 Saving model...")
             self.model.save()
 
-        self.loss_history.append(loss.item())  # store loss
-        return loss.item()  # return latest loss
+        return loss
 
-    def generate_live_table(self, task_name, confidence, tap_x, tap_y, image_path, iteration, accumulated_data, loss):
-        table = Table.grid(expand=True)
-        table.add_column(justify="left")
-        table.add_column(justify="right")
-        avg_conf = (accumulated_data / iteration) if iteration > 0 else 0
-
-        table.add_row("Task:", f"[bold cyan]{task_name}[/bold cyan]")
-        table.add_row(
-            "Confidence:", f"[bold green]{confidence:.2f}[/bold green]")
-        table.add_row("Tap Position:",
-                      f"[bold magenta]({tap_x}, {tap_y})[/bold magenta]")
-        table.add_row("Image:", f"{os.path.basename(image_path)}")
-        table.add_row("Iteration", f"{iteration}")
-        table.add_row("Avg Confidence", f"{avg_conf:.2f}")
-        table.add_row("Loss:", f"[bold red]{loss:.6f}[/bold red]")
-
-        return Panel(table, title="Current Action Info", border_style="blue")
-
-    def plot_loss_curve(self, filename="loss_curve.png"):
-        if not self.loss_history:
-            print("[WARN] No loss history to plot.")
-            return
-
-        plt.figure(figsize=(10, 5))
-        plt.plot(self.loss_history, label="Training Loss", color='red')
-        plt.xlabel("Training Steps")
-        plt.ylabel("Loss")
-        plt.title("Training Loss Curve")
-        plt.grid(True)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(filename)
-        print(f"[INFO] Loss curve saved to {filename}")
+    def perturb_model_weights(self, strength=0.05):
+        self.print("🔧 Perturbing model weights to escape local minima...")
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and param.dim() > 1:
+                if random.random() < 0.2:  # 20% of layers/neurons
+                    noise = torch.randn_like(param) * strength
+                    param.data += noise
 
     def print(self, message):
         print(f"\t[@] {message}")
 
 
-def is_point_in_circle(px, py, cx, cy, r):
-    dist = math.sqrt((px - cx) ** 2 + (py - cy) ** 2)
-    return dist <= r
+def is_within_radius(x_pred, y_pred, x_target, y_target, radius=15):
+    return (abs(x_pred - x_target) <= radius) and (abs(y_pred - y_target) <= radius)
 
 
-def random_point_in_circle(cx, cy, radius=15, x_min=0, x_max=SCREEN_WIDTH, y_min=0, y_max=SCREEN_HEIGHT):
-    for _ in range(100):
-        dx = random.uniform(-radius, radius)
-        dy = random.uniform(-radius, radius)
-        if dx * dx + dy * dy <= radius * radius:
-            x = cx + dx
-            y = cy + dy
-            if x_min <= x <= x_max and y_min <= y <= y_max:
-                return x, y
-    raise ValueError("Unable to find valid point in circle.")
+# === Load image paths ===
+augmented_data_path = os.path.join(SCRIPT_DIR, "augmented_data")
+augmented_data = os.path.join(augmented_data_path, f"augmented_data.csv")
+training_data = os.path.join(TRAINING_DATA_PATH, "data2025-06-21.csv")
+data_sets = [augmented_data, training_data]
 
+all_rows = []
 
-# === Load CSV Data ===
-data = []
-with open(TRAINING_DATA_NAME, 'r', newline='') as csvfile:
-    reader = csv.reader(csvfile)
-    for row in reader:
-        try:
-            image_path = row[0]
-            task_id = int(row[1])
-            x = float(row[2])
-            y = float(row[3])
-            done = int(row[4])
-            confidence = float(row[5])
-            data.append((image_path, task_id, x, y, done, confidence))
-        except Exception as e:
-            print(f"[WARN] Failed to load row: {row} — {e}")
+for data_path in data_sets:
+    with open(data_path, newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile, fieldnames=[
+            'image_path', 'task', 'x_norm', 'y_norm', 'done', 'confidence'])
+        for row in reader:
+            # Convert or process if needed
+            row['x_norm'] = float(row['x_norm'])
+            row['y_norm'] = float(row['y_norm'])
+            row['done'] = float(row['done'])
+            row['confidence'] = float(row['confidence'])
+            # Just keep row as dict, or do other processing
 
-unique_images = set(row[0] for row in data)
-print(f"[INFO] Loaded {len(data)} data points.")
+            # Append to your list, NOT the file path string
+            all_rows.append(row)
+
 
 process = Learn()
-process.start_learn(data=data)
-process.plot_loss_curve()
+process.learn(all_rows)

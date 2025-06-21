@@ -45,6 +45,7 @@ OPEN_CHAT_POS = (625, 480)
 ACCOUNT_TEXT_FIELD_POS = (450, 180)
 PASSWORD_TEXT_FIELD_POS = (450, 250)
 SETTING_TAB_POS = (50, 50)
+TEAM_SETTING_POS = (25, 175)
 
 
 CONFIDENCE_THRESHOLD = 0.7  # adjust as needed
@@ -136,6 +137,10 @@ AUGMENTED_DATA_NAME = os.path.join(AUGMENTED_DATA_PATH, f"augmented_data.csv")
 
 AUGMENTED_IMAGE_PATH = os.path.join(SCRIPT_DIR, "augmented_images")
 
+FEEDBACK_DATA_PATH = os.path.join(SCRIPT_DIR, "feedback")
+FEEDBACK_DATA_FILE = os.path.join(FEEDBACK_DATA_PATH, "feedback.csv")
+
+LEARNING_IMAGE_PATH = os.path.join(SCRIPT_DIR, "learning_images")
 
 # --- Task Enum ---
 class Task(Enum):
