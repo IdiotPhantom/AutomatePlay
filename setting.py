@@ -119,7 +119,7 @@ TEAM_IMAGE = join_image_path("team.png")
 
 class Train:
     TRAINING_TASK = None
-    TRAINING = False
+    TRAINING = True
 
 
 # Get current local time as a struct_time
