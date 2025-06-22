@@ -76,9 +76,9 @@ with open(csv_name, "r") as infile, open(dest_csv_name, "w", newline='') as outf
 
         augmented_count += 1
         for i in range(AUG_PER_IMAGE):
-            aug_tensor = augmentation(image)
-
-            # Optional: unnormalize for saving as RGB image
+            
+            to_tensor = transforms.ToTensor()
+            aug_tensor = to_tensor(image)  # now aug_tensor is a torch.Tensor
             unnormalized = aug_tensor * std + mean
             unnormalized = torch.clamp(unnormalized, 0, 1)
 

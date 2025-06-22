@@ -1,6 +1,8 @@
+# === GameActionModel.py (refactored version) ===
 import torch
 import torch.nn as nn
 import os
+from typing import cast
 from setting import NN_FILE_NAME
 from torchvision.models import resnet18, ResNet18_Weights
 
@@ -9,36 +11,23 @@ class GameActionModel(nn.Module):
     def __init__(self, num_tasks):
         super(GameActionModel, self).__init__()
 
-        # Load pretrained resnet18
+        # Load pretrained ResNet18 and adapt for grayscale
         self.cnn = resnet18(weights=ResNet18_Weights.DEFAULT)
-        self.cnn.fc = nn.Identity()  # Remove final classifier
-
-        # === Modify conv1 to accept 1-channel grayscale input ===
-        orig_conv1 = self.cnn.conv1
-        new_conv1 = nn.Conv2d(
-            in_channels=1,
-            out_channels=orig_conv1.out_channels,
-            kernel_size=orig_conv1.kernel_size,
-            stride=orig_conv1.stride,
-            padding=orig_conv1.padding,
-            bias=orig_conv1.bias is not None
-        )
-        # Average pretrained RGB weights to init grayscale conv
-        new_conv1.weight.data = orig_conv1.weight.data.mean(dim=1, keepdim=True)
-        self.cnn.conv1 = new_conv1
+        self._convert_to_grayscale()
 
         # Task embedding
         self.task_embedding = nn.Embedding(num_tasks, 32)
 
-        # MLP head
+        # MLP head for predicting x, y, done, confidence
         self.mlp = nn.Sequential(
             nn.Linear(512 + 32, 256),
             nn.ReLU(),
             nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Linear(128, 4))
+            nn.Linear(128, 4)
+        )
 
-        # Load model if available
+        # Load pretrained model if exists
         if os.path.exists(NN_FILE_NAME):
             state_dict = torch.load(NN_FILE_NAME)
             renamed_state_dict = {}
@@ -52,6 +41,23 @@ class GameActionModel(nn.Module):
             if unexpected_keys:
                 print(f"[!] Unexpected keys: {unexpected_keys}")
 
+    def _convert_to_grayscale(self):
+        # Modify the first conv layer to accept grayscale images
+        orig_conv1 = self.cnn.conv1
+        new_conv1 = nn.Conv2d(
+            in_channels=1,
+            out_channels=orig_conv1.out_channels,
+            kernel_size=cast(tuple[int, int], orig_conv1.kernel_size),
+            stride=cast(tuple[int, int], orig_conv1.stride),
+            padding=cast(tuple[int, int], orig_conv1.padding),
+            bias=orig_conv1.bias is not None
+        )
+
+        with torch.no_grad():
+            new_conv1.weight.copy_(orig_conv1.weight.mean(dim=1, keepdim=True))
+        self.cnn.conv1 = new_conv1
+        self.cnn.fc = nn.Identity()  # type: ignore # Remove final classifier
+
     def forward(self, image_tensor, task_id):
         assert image_tensor.dtype == torch.float32
         assert task_id.dtype == torch.long
@@ -63,11 +69,13 @@ class GameActionModel(nn.Module):
         combined = torch.cat([image_feat, task_feat], dim=1)
         output = self.mlp(combined)  # [batch, 4]
 
-        x_y = torch.sigmoid(output[:, :2])  # normalized coords
-        done_score = output[:, 2]           # raw logits
-        confidence = torch.sigmoid(output[:, 3])
+        # normalized x, y in [0, 1]
+        x_y = torch.sigmoid(output[:, :2])
+        # raw logits for BCEWithLogitsLoss
+        done_score = output[:, 2]
+        confidence = torch.sigmoid(output[:, 3])      # confidence in [0, 1]
 
-        return torch.cat([x_y, done_score.unsqueeze(1), confidence.unsqueeze(1)], dim=1)
+        return x_y, done_score, confidence
 
     def save(self):
         torch.save(self.state_dict(), NN_FILE_NAME)

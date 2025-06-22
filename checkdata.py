@@ -149,6 +149,7 @@ visualizer = TapVisualizer()
 for row in checking_row:
     visualizer.change_image(row['image_path'])
     task = Task(int(row['task']))
+    prompt = ""
     if row['done'] == 1:
         visualizer.draw_text(text=f"{task.name} Done?", color='green')
         prompt = (f"[{task.name}] Is this Image done?")
